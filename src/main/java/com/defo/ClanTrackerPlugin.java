@@ -30,6 +30,7 @@ import net.runelite.client.ui.ClientToolbar;
 import net.runelite.client.ui.NavigationButton;
 import net.runelite.client.util.ImageUtil;
 import net.runelite.client.util.Text;
+import net.runelite.api.events.GameTick;
 
 @Slf4j
 @PluginDescriptor(name = "ClanTracker", description = "Tracks boss KC and skill XP gains locally (alpha).", tags = {
@@ -112,7 +113,10 @@ public class ClanTrackerPlugin extends Plugin {
 	protected void startUp() {
 		// ---- Load persisted data first ----
 		store = new ClanTrackerStore();
-		store.load(configManager, gson);
+		store.init(configManager, gson);
+
+		String raw = configManager.getConfiguration(ClanTrackerConfig.GROUP, "data_v1");
+		log.info("ClanTracker startup json len={}", raw == null ? 0 : raw.length());
 
 		// ---- Background services ----
 		heartbeat = new HeartbeatService(executor, okHttpClient, gson, store, config);
@@ -125,6 +129,7 @@ public class ClanTrackerPlugin extends Plugin {
 		// Status supplier for heartbeat visibility in the panel.
 		panel.setHeartbeatStatusSupplier(() -> {
 			ClanTrackerPanel.HeartbeatStatus s = new ClanTrackerPanel.HeartbeatStatus();
+			s.readinessHint = computeUploadReadinessHint();
 			s.uploadsEnabled = config.enableUploads();
 			s.sessionActive = store.isSessionActive();
 			s.hasPending = store.hasPending();
@@ -166,6 +171,13 @@ public class ClanTrackerPlugin extends Plugin {
 		if (config.debug()) {
 			log.debug("ClanTracker started");
 		}
+
+		log.info("ClanTracker GROUP={}, KEY=data_v1", ClanTrackerConfig.GROUP);
+
+		log.info("ClanTracker stored json length={}", raw == null ? 0 : raw.length());
+		if (raw != null && raw.length() > 0) {
+			log.info("ClanTracker stored json prefix={}", raw.substring(0, Math.min(raw.length(), 120)));
+		}
 	}
 
 	@Override
@@ -173,6 +185,8 @@ public class ClanTrackerPlugin extends Plugin {
 		// Persist local data.
 		if (store != null) {
 			store.save(configManager, gson);
+			String raw = configManager.getConfiguration(ClanTrackerConfig.GROUP, "data_v1");
+			log.info("ClanTracker persisted json len={}", raw == null ? 0 : raw.length());
 		}
 
 		// Remove navigation button.
@@ -213,7 +227,6 @@ public class ClanTrackerPlugin extends Plugin {
 		// First event for a skill will delta=0 (prev=xp). That’s fine.
 		if (delta > 0) {
 			store.addXp(LocalDate.now(), skill, delta);
-			store.save(configManager, gson); // v0.1: eager save; we can batch later
 
 			store.addSessionXp(skill, delta);
 
@@ -261,7 +274,6 @@ public class ClanTrackerPlugin extends Plugin {
 
 			// Daily (persisted) tracking
 			store.addKc(LocalDate.now(), bossKey, delta);
-			store.save(configManager, gson);
 
 			// UI updates
 			panel.setActiveBossKey(bossKey); // show the most recent boss automatically
@@ -285,7 +297,7 @@ public class ClanTrackerPlugin extends Plugin {
 
 		// Transition into LOGGED_IN => start session
 		if (gs == GameState.LOGGED_IN && lastGameState != GameState.LOGGED_IN) {
-			store.startSession(System.currentTimeMillis());
+			store.startSession(System.currentTimeMillis(), tryResolveRsn(), ClanTrackerConstants.PLUGIN_VERSION);
 			SwingUtilities.invokeLater(panel::refresh);
 		}
 
@@ -297,9 +309,6 @@ public class ClanTrackerPlugin extends Plugin {
 			}
 
 			store.endSession(System.currentTimeMillis());
-
-			// persist last session
-			store.save(configManager, gson);
 
 			SwingUtilities.invokeLater(panel::refresh);
 		}
@@ -322,6 +331,21 @@ public class ClanTrackerPlugin extends Plugin {
 		}
 	}
 
+	@Subscribe
+	public void onGameTick(GameTick tick) {
+		if (!store.isSessionActive()) {
+			return;
+		}
+
+		String rsn = tryResolveRsn();
+		if (rsn == null) {
+			return;
+		}
+
+		store.setCurrentRsn(rsn);
+		store.setSessionRsnIfMissing(rsn);
+	}
+
 	// ============================================================
 	// Helpers
 	// ============================================================
@@ -342,5 +366,43 @@ public class ClanTrackerPlugin extends Plugin {
 		}
 
 		return new BufferedImage(16, 16, BufferedImage.TYPE_INT_ARGB);
+	}
+
+	private String tryResolveRsn() {
+		try {
+			if (client.getLocalPlayer() != null && client.getLocalPlayer().getName() != null) {
+				String name = Text.removeTags(client.getLocalPlayer().getName()).trim();
+				return name.isEmpty() ? null : name;
+			}
+		} catch (Exception ignored) {
+		}
+
+		return null;
+	}
+
+	private String computeUploadReadinessHint() {
+		if (!config.enableUploads()) {
+			return null;
+		}
+
+		String baseUrl = config.baseUrl() == null ? "" : config.baseUrl().trim();
+		if (baseUrl.isEmpty()) {
+			return "missing baseUrl";
+		}
+
+		String apiKey = config.apiKey() == null ? "" : config.apiKey().trim();
+		if (apiKey.isEmpty()) {
+			return "missing apiKey";
+		}
+
+		if (!store.isSessionActive()) {
+			return "no session";
+		}
+
+		if (!store.hasPending()) {
+			return "no pending";
+		}
+
+		return "ready";
 	}
 }

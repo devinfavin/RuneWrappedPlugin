@@ -1,14 +1,16 @@
 package com.defo;
 
-// Imports
 import com.google.gson.Gson;
 import java.time.LocalDate;
 import java.util.EnumMap;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Skill;
 import net.runelite.client.config.ConfigManager;
 
+@Slf4j
 public class ClanTrackerStore {
 	// ============================================================
 	// Persistence
@@ -16,73 +18,131 @@ public class ClanTrackerStore {
 
 	private static final String STORAGE_KEY = "data_v1";
 
-	/**
-	 * Persisted payload container (stored as JSON in ConfigManager).
-	 * Note: xpByDay uses Map (not EnumMap) to avoid Gson EnumMap issues.
-	 */
 	private static class Persisted {
-		Map<String, Map<String, Integer>> kcByDay;
-		Map<Skill, Map<String, Long>> xpByDay;
-		SessionSummary lastSession;
+		String lastRsnKey;
+		Map<String, PlayerData> players;
+	}
+
+	private static class PlayerData {
+		Map<String, Map<String, Integer>> kcByDay = new HashMap<>();
+		Map<String, Map<String, Long>> xpByDay = new HashMap<>(); // skillName -> (date -> xp)
+		SessionSummary lastSession = null;
 	}
 
 	// ============================================================
-	// Rolling (daily) tracking - persisted
+	// Runtime persisted state (per-RSN)
 	// ============================================================
 
-	/**
-	 * skill -> (date -> xpGained)
-	 */
-	private final EnumMap<Skill, Map<String, Long>> xpByDay = new EnumMap<>(Skill.class);
-
-	/**
-	 * bossKey -> (date -> kcGained)
-	 */
-	private final Map<String, Map<String, Integer>> kcByDay = new HashMap<>();
+	private final Map<String, PlayerData> players = new HashMap<>();
+	private String currentRsnKey = "unknown";
+	private String lastActiveRsnKey = "unknown";
 
 	// ============================================================
-	// Session tracking (unverified/live) - not persisted
+	// Initializer
 	// ============================================================
 
-	private boolean sessionActive = false;
-	private String sessionId = null;
-	private long sessionStartMillis = 0L;
+	private ConfigManager configManager;
+	private Gson gson;
 
-	/**
-	 * Totals for current session.
-	 */
-	private final EnumMap<Skill, Long> sessionXp = new EnumMap<>(Skill.class);
-	private final Map<String, Integer> sessionKc = new HashMap<>();
+	public synchronized void init(ConfigManager configManager, Gson gson) {
+		this.configManager = configManager;
+		this.gson = gson;
+		load(configManager, gson);
+	}
 
-	/**
-	 * Pending deltas since last heartbeat (only cleared on successful upload).
-	 */
-	private final EnumMap<Skill, Long> pendingXp = new EnumMap<>(Skill.class);
-	private final Map<String, Integer> pendingKc = new HashMap<>();
-
-	/**
-	 * Last completed session summary (persisted via Persisted.lastSession).
-	 */
-	private SessionSummary lastSession = null;
+	private void persist() {
+		if (configManager == null || gson == null) {
+			return;
+		}
+		save(configManager, gson);
+	}
 
 	// ============================================================
-	// Public API - rolling (daily)
+	// RSN routing helpers
 	// ============================================================
 
-	public void addXp(LocalDate day, Skill skill, long delta) {
+	private static String normalizeRsnKey(String rsn) {
+		if (rsn == null) {
+			return "unknown";
+		}
+		String t = rsn.trim();
+		if (t.isEmpty()) {
+			return "unknown";
+		}
+		return t.toLowerCase();
+	}
+
+	private PlayerData currentPlayer() {
+		return players.computeIfAbsent(currentRsnKey, k -> new PlayerData());
+	}
+
+	public synchronized void setCurrentRsn(String rsn) {
+		String newKey = normalizeRsnKey(rsn);
+		if (newKey.equals(currentRsnKey)) {
+			return;
+		}
+
+		// If we had data under "unknown", merge it into the real rsn on first resolve
+		if ("unknown".equals(currentRsnKey) && !"unknown".equals(newKey)) {
+			PlayerData unknown = players.get("unknown");
+			if (unknown != null) {
+				PlayerData dest = players.computeIfAbsent(newKey, k -> new PlayerData());
+
+				// merge xp
+				for (Map.Entry<String, Map<String, Long>> e : unknown.xpByDay.entrySet()) {
+					Map<String, Long> destDay = dest.xpByDay.computeIfAbsent(e.getKey(), k -> new HashMap<>());
+					for (Map.Entry<String, Long> d : e.getValue().entrySet()) {
+						destDay.put(d.getKey(), destDay.getOrDefault(d.getKey(), 0L) + d.getValue());
+					}
+				}
+
+				// merge kc
+				for (Map.Entry<String, Map<String, Integer>> e : unknown.kcByDay.entrySet()) {
+					Map<String, Integer> destDay = dest.kcByDay.computeIfAbsent(e.getKey(), k -> new HashMap<>());
+					for (Map.Entry<String, Integer> d : e.getValue().entrySet()) {
+						destDay.put(d.getKey(), destDay.getOrDefault(d.getKey(), 0) + d.getValue());
+					}
+				}
+
+				// keep unknown lastSession only if dest doesn't have one
+				if (dest.lastSession == null) {
+					dest.lastSession = unknown.lastSession;
+				}
+
+				players.remove("unknown");
+			}
+		}
+
+		currentRsnKey = newKey;
+		if (!"unknown".equals(newKey)) {
+			lastActiveRsnKey = newKey;
+		}
+		persist();
+	}
+
+	// ============================================================
+	// Public API - rolling (daily), per current RSN
+	// ============================================================
+
+	public synchronized void addXp(LocalDate day, Skill skill, long delta) {
 		String d = day.toString();
-		Map<String, Long> dayMap = xpByDay.computeIfAbsent(skill, k -> new HashMap<>());
+		PlayerData p = currentPlayer();
+		Map<String, Long> dayMap = p.xpByDay.computeIfAbsent(skill.name(), k -> new HashMap<>());
 		dayMap.put(d, dayMap.getOrDefault(d, 0L) + delta);
+		persist();
 	}
 
-	public void addKc(LocalDate day, String bossKey, int delta) {
+	public synchronized void addKc(LocalDate day, String bossKey, int delta) {
 		String d = day.toString();
-		Map<String, Integer> dayMap = kcByDay.computeIfAbsent(bossKey, k -> new HashMap<>());
+		PlayerData p = currentPlayer();
+		Map<String, Integer> dayMap = p.kcByDay.computeIfAbsent(bossKey, k -> new HashMap<>());
 		dayMap.put(d, dayMap.getOrDefault(d, 0) + delta);
+		persist();
 	}
 
-	public long getXpRollingDays(LocalDate today, Skill skill, int days) {
-		Map<String, Long> dayMap = xpByDay.get(skill);
+	public synchronized long getXpRollingDays(LocalDate today, Skill skill, int days) {
+		PlayerData p = currentPlayer();
+		Map<String, Long> dayMap = p.xpByDay.get(skill.name());
 		if (dayMap == null) {
 			return 0;
 		}
@@ -95,8 +155,9 @@ public class ClanTrackerStore {
 		return total;
 	}
 
-	public int getKcRollingDays(LocalDate today, String bossKey, int days) {
-		Map<String, Integer> dayMap = kcByDay.get(bossKey);
+	public synchronized int getKcRollingDays(LocalDate today, String bossKey, int days) {
+		PlayerData p = currentPlayer();
+		Map<String, Integer> dayMap = p.kcByDay.get(bossKey);
 		if (dayMap == null) {
 			return 0;
 		}
@@ -109,61 +170,132 @@ public class ClanTrackerStore {
 		return total;
 	}
 
-	public Map<String, Map<String, Integer>> getAllKcByDay() {
-		return kcByDay;
+	public synchronized Map<String, Map<String, Integer>> getAllKcByDay() {
+		return currentPlayer().kcByDay;
 	}
 
-	public EnumMap<Skill, Map<String, Long>> getAllXpByDay() {
-		return xpByDay;
+	// Compatibility: UI expects EnumMap<Skill,...>
+	public synchronized EnumMap<Skill, Map<String, Long>> getAllXpByDay() {
+		EnumMap<Skill, Map<String, Long>> out = new EnumMap<>(Skill.class);
+		Map<String, Map<String, Long>> raw = currentPlayer().xpByDay;
+
+		for (Map.Entry<String, Map<String, Long>> e : raw.entrySet()) {
+			try {
+				Skill s = Skill.valueOf(e.getKey());
+				out.put(s, e.getValue());
+			} catch (Exception ignored) {
+			}
+		}
+		return out;
 	}
 
 	// ============================================================
 	// Persistence helpers
 	// ============================================================
 
-	public void load(ConfigManager configManager, Gson gson) {
+	public synchronized void load(ConfigManager configManager, Gson gson) {
 		try {
 			String json = configManager.getConfiguration(ClanTrackerConfig.GROUP, STORAGE_KEY);
 			if (json == null || json.isBlank()) {
+				if (log.isDebugEnabled()) {
+					log.debug("ClanTracker load: no persisted JSON found for {}.{}", ClanTrackerConfig.GROUP, STORAGE_KEY);
+				}
 				return;
 			}
 
 			Persisted p = gson.fromJson(json, Persisted.class);
-			if (p == null) {
+			if (p == null || p.players == null) {
+				log.warn("ClanTracker load: parsed payload missing players map; keeping in-memory state");
 				return;
 			}
 
-			kcByDay.clear();
-			xpByDay.clear();
-
-			if (p.kcByDay != null) {
-				kcByDay.putAll(p.kcByDay);
+			Map<String, PlayerData> loadedPlayers = sanitizePlayersMap(p.players);
+			if (loadedPlayers.isEmpty()) {
+				log.warn("ClanTracker load: parsed players map was empty/invalid; keeping in-memory state");
+				return;
 			}
 
-			if (p.xpByDay != null) {
-				// xpByDay is an EnumMap; putAll is fine
-				xpByDay.putAll(p.xpByDay);
+			players.clear();
+			players.putAll(loadedPlayers);
+
+			lastActiveRsnKey = normalizeRsnKey(p.lastRsnKey);
+			if ("unknown".equals(lastActiveRsnKey)) {
+				String candidate = firstNonUnknownPlayerKey(loadedPlayers);
+				if (candidate != null) {
+					lastActiveRsnKey = candidate;
+				}
 			}
 
-			if (p.lastSession != null) {
-				lastSession = p.lastSession;
+			// Default to last active RSN bucket on startup (prevents "looks empty" after
+			// restart)
+			if (players.containsKey(lastActiveRsnKey)) {
+				currentRsnKey = lastActiveRsnKey;
+			} else if (players.containsKey("unknown")) {
+				currentRsnKey = "unknown";
+			} else {
+				currentRsnKey = loadedPlayers.keySet().iterator().next();
+			}
+
+			if (log.isDebugEnabled()) {
+				log.debug(
+						"ClanTracker load: restored {} player buckets, currentRsnKey='{}', lastActiveRsnKey='{}', jsonLen={}",
+						players.size(),
+						currentRsnKey,
+						lastActiveRsnKey,
+						json.length());
 			}
 		} catch (Exception e) {
-			// Never brick plugin enablement because stored data changed
-			kcByDay.clear();
-			xpByDay.clear();
-			lastSession = null;
-			configManager.unsetConfiguration(ClanTrackerConfig.GROUP, STORAGE_KEY);
+			log.error("ClanTracker load failed; keeping existing in-memory state", e);
 		}
 	}
 
-	public void save(ConfigManager configManager, Gson gson) {
+	public synchronized void save(ConfigManager configManager, Gson gson) {
 		Persisted p = new Persisted();
-		p.kcByDay = kcByDay;
-		p.xpByDay = xpByDay;
-		p.lastSession = lastSession;
+		p.players = players;
+		p.lastRsnKey = "unknown".equals(lastActiveRsnKey) ? currentRsnKey : lastActiveRsnKey;
 
-		configManager.setConfiguration(ClanTrackerConfig.GROUP, STORAGE_KEY, gson.toJson(p));
+		String payload = gson.toJson(p);
+		configManager.setConfiguration(ClanTrackerConfig.GROUP, STORAGE_KEY, payload);
+
+		if (log.isDebugEnabled()) {
+			String stored = configManager.getConfiguration(ClanTrackerConfig.GROUP, STORAGE_KEY);
+			log.debug(
+					"ClanTracker save: wrote {}.{}, jsonLen={}, storedLen={}, currentRsnKey='{}', lastActiveRsnKey='{}'",
+					ClanTrackerConfig.GROUP,
+					STORAGE_KEY,
+					payload.length(),
+					stored == null ? 0 : stored.length(),
+					currentRsnKey,
+					lastActiveRsnKey);
+		}
+	}
+
+	private static Map<String, PlayerData> sanitizePlayersMap(Map<String, PlayerData> raw) {
+		Map<String, PlayerData> out = new LinkedHashMap<>();
+		for (Map.Entry<String, PlayerData> e : raw.entrySet()) {
+			String key = normalizeRsnKey(e.getKey());
+			PlayerData value = e.getValue();
+			if (value == null) {
+				value = new PlayerData();
+			}
+			if (value.kcByDay == null) {
+				value.kcByDay = new HashMap<>();
+			}
+			if (value.xpByDay == null) {
+				value.xpByDay = new HashMap<>();
+			}
+			out.put(key, value);
+		}
+		return out;
+	}
+
+	private static String firstNonUnknownPlayerKey(Map<String, PlayerData> map) {
+		for (String key : map.keySet()) {
+			if (!"unknown".equals(key)) {
+				return key;
+			}
+		}
+		return null;
 	}
 
 	// ============================================================
@@ -173,9 +305,12 @@ public class ClanTrackerStore {
 	public static class SessionSummary {
 		public String sessionId;
 		public long startedAtMillis;
-		public long endedAtMillis; // 0 while active
+		public long endedAtMillis;
 		public EnumMap<Skill, Long> xpGained;
 		public Map<String, Integer> kcGained;
+		public int schemaVersion;
+		public String pluginVersion;
+		public String rsn;
 	}
 
 	public static class PendingBatch {
@@ -184,16 +319,36 @@ public class ClanTrackerStore {
 		public long clientTimeMillis;
 		public EnumMap<Skill, Long> xpDelta;
 		public Map<String, Integer> kcDelta;
+		public int schemaVersion;
+		public String pluginVersion;
+		public String rsn;
 	}
 
 	// ============================================================
-	// Session lifecycle + session totals
+	// Session tracking (unverified/live) - not persisted
 	// ============================================================
 
-	public synchronized void startSession(long nowMillis) {
+	private boolean sessionActive = false;
+	private String sessionId = null;
+	private long sessionStartMillis = 0L;
+	private String sessionRsn = null;
+	private String sessionPluginVersion = null;
+
+	private final EnumMap<Skill, Long> sessionXp = new EnumMap<>(Skill.class);
+	private final Map<String, Integer> sessionKc = new HashMap<>();
+
+	private final EnumMap<Skill, Long> pendingXp = new EnumMap<>(Skill.class);
+	private final Map<String, Integer> pendingKc = new HashMap<>();
+
+	public synchronized void startSession(long nowMillis, String rsn, String pluginVersion) {
 		sessionActive = true;
 		sessionId = java.util.UUID.randomUUID().toString();
 		sessionStartMillis = nowMillis;
+		sessionRsn = rsn;
+		sessionPluginVersion = pluginVersion;
+
+		// Route future rolling data into the correct RSN bucket as soon as we can
+		setCurrentRsn(rsn);
 
 		sessionXp.clear();
 		sessionKc.clear();
@@ -207,23 +362,26 @@ public class ClanTrackerStore {
 		}
 
 		SessionSummary s = new SessionSummary();
+		s.schemaVersion = ClanTrackerConstants.SCHEMA_VERSION;
+		s.pluginVersion = sessionPluginVersion;
+		s.rsn = (sessionRsn == null || sessionRsn.isBlank()) ? "unknown" : sessionRsn;
 		s.sessionId = sessionId;
 		s.startedAtMillis = sessionStartMillis;
 		s.endedAtMillis = nowMillis;
 		s.xpGained = new EnumMap<>(sessionXp);
 		s.kcGained = new HashMap<>(sessionKc);
 
-		lastSession = s;
+		currentPlayer().lastSession = s;
+		persist();
 
-		// Reset active session state (but do NOT clear pending here)
 		sessionActive = false;
 		sessionId = null;
 		sessionStartMillis = 0L;
 		sessionXp.clear();
 		sessionKc.clear();
+		sessionRsn = null;
+		sessionPluginVersion = null;
 
-		// We purposely do NOT clear pending here.
-		// We'll flush a final heartbeat attempt on logout in the plugin.
 		return s;
 	}
 
@@ -247,9 +405,15 @@ public class ClanTrackerStore {
 		return sessionXp.getOrDefault(skill, 0L);
 	}
 
-	// ============================================================
-	// Session accumulation
-	// ============================================================
+	public synchronized void setSessionRsnIfMissing(String rsn) {
+		if (rsn == null || rsn.isBlank()) {
+			return;
+		}
+
+		if (sessionRsn == null || sessionRsn.isBlank() || "unknown".equalsIgnoreCase(sessionRsn)) {
+			sessionRsn = rsn;
+		}
+	}
 
 	public synchronized void addSessionXp(Skill skill, long delta) {
 		if (!sessionActive || delta <= 0) {
@@ -269,16 +433,15 @@ public class ClanTrackerStore {
 		pendingKc.put(bossKey, pendingKc.getOrDefault(bossKey, 0) + delta);
 	}
 
-	// ============================================================
-	// Heartbeat batching
-	// ============================================================
-
 	public synchronized PendingBatch snapshotPending(long nowMillis) {
 		if (!sessionActive) {
 			return null;
 		}
 
 		PendingBatch b = new PendingBatch();
+		b.schemaVersion = ClanTrackerConstants.SCHEMA_VERSION;
+		b.pluginVersion = sessionPluginVersion;
+		b.rsn = sessionRsn;
 		b.sessionId = sessionId;
 		b.startedAtMillis = sessionStartMillis;
 		b.clientTimeMillis = nowMillis;
@@ -297,15 +460,12 @@ public class ClanTrackerStore {
 		pendingKc.clear();
 	}
 
-	// ============================================================
-	// Last session summary (export)
-	// ============================================================
-
 	public synchronized SessionSummary getLastSession() {
-		return lastSession;
+		return currentPlayer().lastSession;
 	}
 
 	public synchronized void setLastSession(SessionSummary s) {
-		lastSession = s;
+		currentPlayer().lastSession = s;
+		persist();
 	}
 }

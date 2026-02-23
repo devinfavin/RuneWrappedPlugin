@@ -117,7 +117,9 @@ public class HeartbeatService {
         }
 
         HeartbeatPayload payload = new HeartbeatPayload();
-        payload.schemaVersion = 1;
+        payload.schemaVersion = ClanTrackerConstants.SCHEMA_VERSION;
+        payload.pluginVersion = batch.pluginVersion;
+        payload.rsn = batch.rsn;
         payload.sessionId = batch.sessionId;
         payload.startedAtMillis = batch.startedAtMillis;
         payload.clientTimeMillis = batch.clientTimeMillis;
@@ -172,6 +174,8 @@ public class HeartbeatService {
 
     private static class HeartbeatPayload {
         int schemaVersion;
+        String pluginVersion;
+        String rsn;
         String sessionId;
         long startedAtMillis;
         long clientTimeMillis;

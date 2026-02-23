@@ -97,6 +97,7 @@ public class ClanTrackerPanel extends PluginPanel {
 	private final JLabel hbLine2 = new JLabel("Pending: -");
 	private final JLabel hbLine3 = new JLabel("Last: -");
 	private final JLabel hbLine4 = new JLabel("");
+	public String readinessHint;
 
 	// ============================================================
 	// UI - Actions
@@ -600,8 +601,11 @@ public class ClanTrackerPanel extends PluginPanel {
 			return;
 		}
 
-		hbLine1.setText("Uploads: " + (s.uploadsEnabled ? "On" : "Off") +
-				(s.sessionActive ? "" : " (no session)"));
+		String uploadsLabel = s.uploadsEnabled ? "On" : "Off";
+		if (s.readinessHint != null && !s.readinessHint.isBlank()) {
+			uploadsLabel += " (" + s.readinessHint + ")";
+		}
+		hbLine1.setText("Uploads: " + uploadsLabel);
 
 		hbLine2.setText("Pending: " + (s.hasPending ? "Yes" : "No"));
 
@@ -662,5 +666,6 @@ public class ClanTrackerPanel extends PluginPanel {
 		public long lastAttemptMillis;
 		public long lastSuccessMillis;
 		public String lastError;
+		public String readinessHint;
 	}
 }
