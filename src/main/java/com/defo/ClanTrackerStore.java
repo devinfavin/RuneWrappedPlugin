@@ -231,7 +231,7 @@ public class ClanTrackerStore {
 		return sessionActive;
 	}
 
-	public synchronized String getsessionId() {
+	public synchronized String getSessionId() {
 		return sessionId;
 	}
 
