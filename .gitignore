@@ -1,9 +1,21 @@
-.gradle
-build
-.idea/
-.project
-.settings/
-.classpath
-nbactions.xml
-nb-configuration.xml
-nbproject/
+# Gradle
+.gradle/
+build/
+*.gradle
+
+# VS Code (ignore all by default)
+.vscode/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Java
+*.class
+
+# Logs
+*.log
+
+# Local env / secrets (if you add any)
+.env
+.env.*
