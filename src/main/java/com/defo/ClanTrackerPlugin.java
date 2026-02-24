@@ -95,6 +95,7 @@ public class ClanTrackerPlugin extends Plugin {
 	 * Used to detect transitions into/out of LOGGED_IN for session lifecycle.
 	 */
 	private GameState lastGameState = null;
+	private String lastResolvedRsn = null;
 
 	// ============================================================
 	// Config wiring
@@ -131,6 +132,7 @@ public class ClanTrackerPlugin extends Plugin {
 			ClanTrackerPanel.HeartbeatStatus s = new ClanTrackerPanel.HeartbeatStatus();
 			s.readinessHint = computeUploadReadinessHint();
 			s.uploadsEnabled = config.enableUploads();
+			s.loggedIn = client.getGameState() == GameState.LOGGED_IN;
 			s.sessionActive = store.isSessionActive();
 			s.hasPending = store.hasPending();
 
@@ -297,6 +299,7 @@ public class ClanTrackerPlugin extends Plugin {
 
 		// Transition into LOGGED_IN => start session
 		if (gs == GameState.LOGGED_IN && lastGameState != GameState.LOGGED_IN) {
+			lastResolvedRsn = null;
 			store.startSession(System.currentTimeMillis(), tryResolveRsn(), ClanTrackerConstants.PLUGIN_VERSION);
 			SwingUtilities.invokeLater(panel::refresh);
 		}
@@ -309,6 +312,7 @@ public class ClanTrackerPlugin extends Plugin {
 			}
 
 			store.endSession(System.currentTimeMillis());
+			lastResolvedRsn = null;
 
 			SwingUtilities.invokeLater(panel::refresh);
 		}
@@ -344,6 +348,13 @@ public class ClanTrackerPlugin extends Plugin {
 
 		store.setCurrentRsn(rsn);
 		store.setSessionRsnIfMissing(rsn);
+
+		// RSN may resolve after LOGGED_IN transition; repaint once when it changes so
+		// rolling totals update immediately without requiring user interaction.
+		if (!rsn.equalsIgnoreCase(lastResolvedRsn)) {
+			lastResolvedRsn = rsn;
+			SwingUtilities.invokeLater(panel::refresh);
+		}
 	}
 
 	// ============================================================

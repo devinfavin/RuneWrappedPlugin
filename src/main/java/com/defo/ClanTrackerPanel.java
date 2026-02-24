@@ -92,6 +92,7 @@ public class ClanTrackerPanel extends PluginPanel {
 	// ============================================================
 
 	private java.util.function.Supplier<HeartbeatStatus> heartbeatStatusSupplier = null;
+	private boolean clientLoggedIn = false;
 
 	private final JLabel hbLine1 = new JLabel("Uploads: Off");
 	private final JLabel hbLine2 = new JLabel("Pending: -");
@@ -183,6 +184,10 @@ public class ClanTrackerPanel extends PluginPanel {
 		}
 
 		updateHeartbeatStatus();
+		if (!clientLoggedIn) {
+			renderLoggedOutState();
+			return;
+		}
 
 		LocalDate today = LocalDate.now();
 
@@ -589,6 +594,7 @@ public class ClanTrackerPanel extends PluginPanel {
 
 	private void updateHeartbeatStatus() {
 		if (heartbeatStatusSupplier == null) {
+			clientLoggedIn = false;
 			hbLine1.setText("Uploads: Off");
 			hbLine2.setText("Pending: -");
 			hbLine3.setText("Last: -");
@@ -598,8 +604,10 @@ public class ClanTrackerPanel extends PluginPanel {
 
 		HeartbeatStatus s = heartbeatStatusSupplier.get();
 		if (s == null) {
+			clientLoggedIn = false;
 			return;
 		}
+		clientLoggedIn = s.loggedIn;
 
 		String uploadsLabel = s.uploadsEnabled ? "On" : "Off";
 		if (s.readinessHint != null && !s.readinessHint.isBlank()) {
@@ -622,6 +630,28 @@ public class ClanTrackerPanel extends PluginPanel {
 		} else {
 			hbLine4.setText("");
 		}
+	}
+
+	private void renderLoggedOutState() {
+		cardTitle.setText(selectedSkill == null ? "Total XP" : selectedSkill.getName() + " XP");
+		cardValue.setText("---");
+		cardSub.setText("Log in to view data");
+
+		if (selectedSkill == null) {
+			detailTitle.setText("Top skills");
+			showTopCard();
+			topSkillLines[0].setText("Log in to view tracked totals");
+			for (int i = 1; i < topSkillLines.length; i++) {
+				topSkillLines[i].setText(" ");
+			}
+			return;
+		}
+
+		detailTitle.setText(selectedSkill.getName() + " breakdown");
+		showSingleCard();
+		detailLine1.setText("Log in to view tracked totals");
+		detailLine2.setText(" ");
+		detailLine3.setText(" ");
 	}
 
 	private static String ago(long millis) {
@@ -661,6 +691,7 @@ public class ClanTrackerPanel extends PluginPanel {
 
 	public static final class HeartbeatStatus {
 		public boolean uploadsEnabled;
+		public boolean loggedIn;
 		public boolean sessionActive;
 		public boolean hasPending;
 		public long lastAttemptMillis;
