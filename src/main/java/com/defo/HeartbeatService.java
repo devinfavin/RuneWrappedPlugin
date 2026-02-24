@@ -179,7 +179,7 @@ public class HeartbeatService {
         String sessionId;
         long startedAtMillis;
         long clientTimeMillis;
-        java.util.Map<net.runelite.api.Skill, Long> xpDelta;
+        java.util.Map<String, Long> xpDelta;
         java.util.Map<String, Integer> kcDelta;
     }
 }

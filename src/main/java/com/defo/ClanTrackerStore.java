@@ -298,6 +298,14 @@ public class ClanTrackerStore {
 		return null;
 	}
 
+	private static Map<String, Long> toSkillNameMap(EnumMap<Skill, Long> input) {
+		Map<String, Long> out = new HashMap<>();
+		for (Map.Entry<Skill, Long> e : input.entrySet()) {
+			out.put(e.getKey().name(), e.getValue());
+		}
+		return out;
+	}
+
 	// ============================================================
 	// Session models
 	// ============================================================
@@ -306,7 +314,7 @@ public class ClanTrackerStore {
 		public String sessionId;
 		public long startedAtMillis;
 		public long endedAtMillis;
-		public EnumMap<Skill, Long> xpGained;
+		public Map<String, Long> xpGained;
 		public Map<String, Integer> kcGained;
 		public int schemaVersion;
 		public String pluginVersion;
@@ -317,7 +325,7 @@ public class ClanTrackerStore {
 		public String sessionId;
 		public long startedAtMillis;
 		public long clientTimeMillis;
-		public EnumMap<Skill, Long> xpDelta;
+		public Map<String, Long> xpDelta;
 		public Map<String, Integer> kcDelta;
 		public int schemaVersion;
 		public String pluginVersion;
@@ -368,7 +376,7 @@ public class ClanTrackerStore {
 		s.sessionId = sessionId;
 		s.startedAtMillis = sessionStartMillis;
 		s.endedAtMillis = nowMillis;
-		s.xpGained = new EnumMap<>(sessionXp);
+		s.xpGained = toSkillNameMap(sessionXp);
 		s.kcGained = new HashMap<>(sessionKc);
 
 		currentPlayer().lastSession = s;
@@ -445,7 +453,7 @@ public class ClanTrackerStore {
 		b.sessionId = sessionId;
 		b.startedAtMillis = sessionStartMillis;
 		b.clientTimeMillis = nowMillis;
-		b.xpDelta = new EnumMap<>(pendingXp);
+		b.xpDelta = toSkillNameMap(pendingXp);
 		b.kcDelta = new HashMap<>(pendingKc);
 
 		return b;
