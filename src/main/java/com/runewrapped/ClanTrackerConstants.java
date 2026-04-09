@@ -1,4 +1,4 @@
-package com.defo;
+package com.runewrapped;
 
 /**
  * Shared constants for payload schema + plugin metadata.
@@ -10,7 +10,7 @@ public final class ClanTrackerConstants
 	private ClanTrackerConstants() {}
 
 	/** Heartbeat/session payload schema version. */
-	public static final int SCHEMA_VERSION = 1;
+	public static final int SCHEMA_VERSION = 2;
 
 	/**
 	 * Plugin version string included in uploads/exports.

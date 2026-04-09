@@ -1,4 +1,4 @@
-package com.defo;
+package com.runewrapped;
 
 // Imports
 import net.runelite.api.Skill;

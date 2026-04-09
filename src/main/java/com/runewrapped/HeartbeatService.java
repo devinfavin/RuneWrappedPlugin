@@ -1,4 +1,4 @@
-package com.defo;
+package com.runewrapped;
 
 // Imports
 import com.google.gson.Gson;
@@ -125,6 +125,7 @@ public class HeartbeatService {
         payload.clientTimeMillis = batch.clientTimeMillis;
         payload.xpDelta = batch.xpDelta;
         payload.kcDelta = batch.kcDelta;
+        payload.locationSamples = batch.locationSamples;
 
         String json = gson.toJson(payload);
 
@@ -181,5 +182,7 @@ public class HeartbeatService {
         long clientTimeMillis;
         java.util.Map<String, Long> xpDelta;
         java.util.Map<String, Integer> kcDelta;
+        /** skill name (uppercase) → [[x,y,plane], ...]. Null if no samples were collected. */
+        java.util.Map<String, java.util.List<int[]>> locationSamples;
     }
 }

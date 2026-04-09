@@ -1,4 +1,4 @@
-package com.defo;
+package com.runewrapped;
 
 // Imports
 import com.google.gson.Gson;
@@ -17,6 +17,7 @@ import net.runelite.api.ChatMessageType;
 import net.runelite.api.Client;
 import net.runelite.api.GameState;
 import net.runelite.api.Skill;
+import net.runelite.api.coords.WorldPoint;
 import net.runelite.api.events.ChatMessage;
 import net.runelite.api.events.GameStateChanged;
 import net.runelite.api.events.StatChanged;
@@ -33,8 +34,11 @@ import net.runelite.client.util.Text;
 import net.runelite.api.events.GameTick;
 
 @Slf4j
-@PluginDescriptor(name = "ClanTracker", description = "Tracks boss KC and skill XP gains locally (alpha).", tags = {
-		"kc", "xp", "tracker", "wrapped" })
+@PluginDescriptor(
+		name = "RuneWrapped",
+		description = "Your clan's Gielinor Wrapped. Tracks XP and boss KC during play sessions and syncs to a clan backend that generates a cinematic year-in-review playable in your browser.",
+		tags = {"kc", "xp", "tracker", "recap", "wrapped", "clan", "bossing", "skilling"}
+)
 public class ClanTrackerPlugin extends Plugin {
 	// ============================================================
 	// Constants
@@ -96,6 +100,11 @@ public class ClanTrackerPlugin extends Plugin {
 	 */
 	private GameState lastGameState = null;
 	private String lastResolvedRsn = null;
+
+	/** Location sampling state. */
+	private static final long PERIODIC_SAMPLE_INTERVAL_MS = 10 * 60 * 1000L; // 10 minutes
+	private Skill lastActiveSkill = null;
+	private long lastPeriodicSampleMillis = 0L;
 
 	// ============================================================
 	// Config wiring
@@ -229,8 +238,14 @@ public class ClanTrackerPlugin extends Plugin {
 		// First event for a skill will delta=0 (prev=xp). That’s fine.
 		if (delta > 0) {
 			store.addXp(LocalDate.now(), skill, delta);
-
 			store.addSessionXp(skill, delta);
+
+			// Location sampling: record a sample whenever the active skill changes.
+			if (skill != lastActiveSkill && client.getLocalPlayer() != null) {
+				WorldPoint loc = client.getLocalPlayer().getWorldLocation();
+				store.recordLocationSample(skill, loc.getX(), loc.getY(), loc.getPlane());
+				lastActiveSkill = skill;
+			}
 
 			SwingUtilities.invokeLater(panel::refresh);
 
@@ -300,6 +315,8 @@ public class ClanTrackerPlugin extends Plugin {
 		// Transition into LOGGED_IN => start session
 		if (gs == GameState.LOGGED_IN && lastGameState != GameState.LOGGED_IN) {
 			lastResolvedRsn = null;
+			lastActiveSkill = null;
+			lastPeriodicSampleMillis = System.currentTimeMillis();
 			store.startSession(System.currentTimeMillis(), tryResolveRsn(), ClanTrackerConstants.PLUGIN_VERSION);
 			SwingUtilities.invokeLater(panel::refresh);
 		}
@@ -339,6 +356,15 @@ public class ClanTrackerPlugin extends Plugin {
 	public void onGameTick(GameTick tick) {
 		if (!store.isSessionActive()) {
 			return;
+		}
+
+		// Periodic location sample: every 10 minutes for the currently active skill.
+		long now = System.currentTimeMillis();
+		if (lastActiveSkill != null && now - lastPeriodicSampleMillis >= PERIODIC_SAMPLE_INTERVAL_MS
+				&& client.getLocalPlayer() != null) {
+			WorldPoint loc = client.getLocalPlayer().getWorldLocation();
+			store.recordLocationSample(lastActiveSkill, loc.getX(), loc.getY(), loc.getPlane());
+			lastPeriodicSampleMillis = now;
 		}
 
 		String rsn = tryResolveRsn();

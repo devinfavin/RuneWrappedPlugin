@@ -1,10 +1,12 @@
-package com.defo;
+package com.runewrapped;
 
 import com.google.gson.Gson;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import lombok.extern.slf4j.Slf4j;
 import net.runelite.api.Skill;
@@ -327,6 +329,8 @@ public class ClanTrackerStore {
 		public long clientTimeMillis;
 		public Map<String, Long> xpDelta;
 		public Map<String, Integer> kcDelta;
+		/** skill name (uppercase) → list of [x, y, plane] samples. Null if none recorded. */
+		public Map<String, List<int[]>> locationSamples;
 		public int schemaVersion;
 		public String pluginVersion;
 		public String rsn;
@@ -347,6 +351,10 @@ public class ClanTrackerStore {
 
 	private final EnumMap<Skill, Long> pendingXp = new EnumMap<>(Skill.class);
 	private final Map<String, Integer> pendingKc = new HashMap<>();
+	/** Skill.name() → list of [x, y, plane] samples captured during this pending window. */
+	private final Map<String, List<int[]>> pendingLocationSamples = new HashMap<>();
+
+	private static final int MAX_SAMPLES_PER_SKILL = 20;
 
 	public synchronized void startSession(long nowMillis, String rsn, String pluginVersion) {
 		sessionActive = true;
@@ -362,6 +370,7 @@ public class ClanTrackerStore {
 		sessionKc.clear();
 		pendingXp.clear();
 		pendingKc.clear();
+		pendingLocationSamples.clear();
 	}
 
 	public synchronized SessionSummary endSession(long nowMillis) {
@@ -423,6 +432,21 @@ public class ClanTrackerStore {
 		}
 	}
 
+	/**
+	 * Records a world location sample for the given skill.
+	 * Capped at MAX_SAMPLES_PER_SKILL to keep payload size bounded.
+	 * Safe to call from the client thread.
+	 */
+	public synchronized void recordLocationSample(Skill skill, int x, int y, int plane) {
+		if (!sessionActive) {
+			return;
+		}
+		List<int[]> samples = pendingLocationSamples.computeIfAbsent(skill.name(), k -> new ArrayList<>());
+		if (samples.size() < MAX_SAMPLES_PER_SKILL) {
+			samples.add(new int[]{x, y, plane});
+		}
+	}
+
 	public synchronized void addSessionXp(Skill skill, long delta) {
 		if (!sessionActive || delta <= 0) {
 			return;
@@ -455,6 +479,7 @@ public class ClanTrackerStore {
 		b.clientTimeMillis = nowMillis;
 		b.xpDelta = toSkillNameMap(pendingXp);
 		b.kcDelta = new HashMap<>(pendingKc);
+		b.locationSamples = pendingLocationSamples.isEmpty() ? null : deepCopyLocationSamples();
 
 		return b;
 	}
@@ -466,6 +491,15 @@ public class ClanTrackerStore {
 	public synchronized void clearPending() {
 		pendingXp.clear();
 		pendingKc.clear();
+		pendingLocationSamples.clear();
+	}
+
+	private Map<String, List<int[]>> deepCopyLocationSamples() {
+		Map<String, List<int[]>> copy = new HashMap<>();
+		for (Map.Entry<String, List<int[]>> e : pendingLocationSamples.entrySet()) {
+			copy.put(e.getKey(), new ArrayList<>(e.getValue()));
+		}
+		return copy;
 	}
 
 	public synchronized SessionSummary getLastSession() {

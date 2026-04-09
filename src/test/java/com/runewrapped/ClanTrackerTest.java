@@ -1,4 +1,4 @@
-package com.defo;
+package com.runewrapped;
 
 import net.runelite.client.RuneLite;
 import net.runelite.client.externalplugins.ExternalPluginManager;
